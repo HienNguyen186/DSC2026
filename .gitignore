@@ -1,0 +1,23 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment
+.env
+
+# Dataset
+data/raw/
+data/LegalIR/
+
+# Generated outputs
+outputs/
+
+# Large files
+*.zip
+*.pkl
+*.jsonl
