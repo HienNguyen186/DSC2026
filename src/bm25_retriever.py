@@ -12,27 +12,83 @@ highly informative for this corpus.
 from __future__ import annotations
 
 import json
+import math
 import pickle
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
 
-import numpy as np
-from rank_bm25 import BM25Okapi
+try:
+    from rank_bm25 import BM25Okapi
+except Exception:  # pragma: no cover
+    BM25Okapi = None
 
+from src.legal_patterns import legal_boost_score
+from src.query_expansion import expand_tokens
 from src.text_utils import tokenize
 
 DEFAULT_MAX_TOKENS_PER_DOC = 6000
 DEFAULT_TITLE_BOOST = 4
 
 
+class SimpleBM25Okapi:
+    """Small fallback BM25 implementation for environments without rank_bm25."""
+
+    def __init__(self, corpus: list[list[str]], k1: float = 1.5, b: float = 0.75):
+        self.k1 = k1
+        self.b = b
+        self.doc_freqs = [Counter(doc) for doc in corpus]
+        self.doc_len = [len(doc) for doc in corpus]
+        self.avgdl = sum(self.doc_len) / max(len(self.doc_len), 1)
+        df: Counter[str] = Counter()
+        for freq in self.doc_freqs:
+            df.update(freq.keys())
+        n_docs = len(corpus)
+        self.idf = {
+            term: math.log((n_docs - freq + 0.5) / (freq + 0.5) + 1.0)
+            for term, freq in df.items()
+        }
+
+    def get_scores(self, query_tokens: list[str]) -> list[float]:
+        scores: list[float] = []
+        for freq, dl in zip(self.doc_freqs, self.doc_len):
+            score = 0.0
+            norm = self.k1 * (1.0 - self.b + self.b * dl / max(self.avgdl, 1e-9))
+            for term in query_tokens:
+                tf = freq.get(term, 0)
+                if tf <= 0:
+                    continue
+                score += self.idf.get(term, 0.0) * (tf * (self.k1 + 1.0)) / (tf + norm)
+            scores.append(score)
+        return scores
+
+
 def iter_corpus(path: str | Path) -> Iterator[dict[str, Any]]:
-    """Stream corpus records from a JSONL file, one doc per line."""
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            yield json.loads(line)
+    """Stream corpus records from JSONL, or read JSON list/dict corpora."""
+
+    path = Path(path)
+    if path.suffix.lower() == ".jsonl":
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                yield json.loads(line)
+        return
+
+    with path.open("r", encoding="utf-8") as fh:
+        data = json.load(fh)
+
+    if isinstance(data, dict):
+        values = data.values()
+    elif isinstance(data, list):
+        values = data
+    else:
+        raise ValueError(f"Unsupported corpus JSON root: {type(data).__name__}")
+
+    for rec in values:
+        if isinstance(rec, dict):
+            yield rec
 
 
 class BM25Retriever:
@@ -50,7 +106,7 @@ class BM25Retriever:
 
         self.doc_ids: list[str] = []
         self.doc_meta: dict[str, dict[str, Any]] = {}
-        self.bm25: BM25Okapi | None = None
+        self.bm25: Any | None = None
 
         self._build_index()
 
@@ -87,32 +143,53 @@ class BM25Retriever:
             raise ValueError("BM25Retriever: empty corpus.")
 
         print(f"[BM25Retriever] Indexing {len(tokenized_docs):,} documents ...")
-        self.bm25 = BM25Okapi(tokenized_docs)
+        bm25_cls = BM25Okapi or SimpleBM25Okapi
+        self.bm25 = bm25_cls(tokenized_docs)
         print("[BM25Retriever] Index ready.")
 
     # ------------------------------------------------------------------
 
-    def retrieve(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-        """Return top_k documents ranked by BM25 score, highest first."""
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        candidate_k: int | None = None,
+        use_expansion: bool = False,
+        use_legal_boost: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return top_k documents after BM25 candidate search and legal rerank."""
         assert self.bm25 is not None
         if top_k <= 0:
             return []
-        q_tokens = tokenize(query, use_ftfy=True)
-        scores = np.asarray(self.bm25.get_scores(q_tokens), dtype=np.float32)
 
-        k = min(top_k, len(scores))
-        idx = np.argpartition(scores, -k)[-k:]
-        idx = idx[np.argsort(scores[idx])[::-1]]
+        q_tokens = expand_tokens(query) if use_expansion else tokenize(query, use_ftfy=True)
+        scores = self.bm25.get_scores(q_tokens)
+
+        pool_k = min(candidate_k or max(top_k * 20, top_k), len(scores))
+        idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:pool_k]
+
+        reranked = []
+        for i in idx:
+            doc_id = self.doc_ids[int(i)]
+            meta = self.doc_meta[doc_id]
+            boost = 0.0
+            if use_legal_boost:
+                boost = legal_boost_score(query, meta["name"])
+            bm25_score = float(scores[i])
+            reranked.append((int(i), bm25_score, boost, bm25_score + boost))
+        reranked.sort(key=lambda x: x[3], reverse=True)
 
         results = []
-        for rank, i in enumerate(idx, 1):
-            doc_id = self.doc_ids[int(i)]
+        for rank, (i, bm25_score, legal_boost, final_score) in enumerate(reranked[:top_k], 1):
+            doc_id = self.doc_ids[i]
             meta = self.doc_meta[doc_id]
             results.append({
                 "id": doc_id,
                 "name": meta["name"],
                 "link": meta["link"],
-                "bm25_score": float(scores[i]),
+                "bm25_score": bm25_score,
+                "legal_boost": legal_boost,
+                "score": final_score,
                 "rank": rank,
             })
         return results

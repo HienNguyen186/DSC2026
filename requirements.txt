@@ -12,3 +12,7 @@ ftfy>=6.2.0             # fixes mojibake/encoding glitches (used for queries)
 
 # ── Testing (optional, dev-only) ────────────────────────────────────
 pytest>=8.2.0
+
+# Optional neural retrieval/reranking experiments:
+# sentence-transformers>=3.0.0  # BGE-M3, Vietnamese Sentence-BERT, BGE reranker
+# torch>=2.2.0

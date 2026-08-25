@@ -41,6 +41,9 @@ def evaluate(
     retriever: BM25Retriever,
     train_path: Path,
     top_k: int,
+    candidate_k: int,
+    use_expansion: bool,
+    use_legal_boost: bool,
     limit: int | None,
     verbose: bool,
 ) -> None:
@@ -62,7 +65,13 @@ def evaluate(
         if not gold:
             continue
 
-        retrieved = retriever.retrieve(question, top_k=top_k)
+        retrieved = retriever.retrieve(
+            question,
+            top_k=top_k,
+            candidate_k=candidate_k,
+            use_expansion=use_expansion,
+            use_legal_boost=use_legal_boost,
+        )
         pred_ids = [r["id"] for r in retrieved]
 
         if len(pred_ids) > MAX_ALLOWED_PREDICTIONS:
@@ -106,10 +115,13 @@ def evaluate(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate LegalIR BM25 retrieval.")
-    parser.add_argument("--corpus", default="data/raw/corpus.jsonl")
-    parser.add_argument("--train", default="data/raw/train.json")
-    parser.add_argument("--index", default="outputs/bm25_index.pkl")
+    parser.add_argument("--corpus", default="data/raw/Task1/corpus.json")
+    parser.add_argument("--train", default="data/raw/Task1/train.json")
+    parser.add_argument("--index", default="outputs/bm25_index_task1.pkl")
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--candidate-k", type=int, default=100)
+    parser.add_argument("--use-expansion", action="store_true")
+    parser.add_argument("--use-legal-boost", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--rebuild-index", action="store_true")
@@ -123,7 +135,16 @@ def main() -> int:
         index_path.unlink()
 
     retriever = load_or_build_index(index_path, corpus_path)
-    evaluate(retriever, train_path, args.top_k, args.limit, args.verbose)
+    evaluate(
+        retriever,
+        train_path,
+        args.top_k,
+        args.candidate_k,
+        args.use_expansion,
+        args.use_legal_boost,
+        args.limit,
+        args.verbose,
+    )
     return 0
 
 
