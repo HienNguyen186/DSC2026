@@ -1,0 +1,14 @@
+# LegalIR (Task 1) — dependencies
+#
+# Tested with Python 3.10+ (developed/verified on Python 3.12.3).
+# Install: pip install -r requirements.txt
+
+# ── Core retrieval ────────────────────────────────────────────────────
+rank-bm25>=0.2.2       # BM25Okapi ranking
+numpy>=1.26.0          # vectorized scoring, fast top-k selection
+
+# ── Vietnamese text normalization ───────────────────────────────────
+ftfy>=6.2.0             # fixes mojibake/encoding glitches (used for queries)
+
+# ── Testing (optional, dev-only) ────────────────────────────────────
+pytest>=8.2.0
